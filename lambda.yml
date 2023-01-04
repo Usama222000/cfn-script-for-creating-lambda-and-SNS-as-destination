@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC Nested Stack Template
+##### PARAMETERS #####
+Parameters:
+  LambdaRate:
+    Description: run everyday
+    Type: String
+    Default: "cron(15 10 * * ? *)"
+  EnvironmentName:
+    Description: Select the environment 
+    Type: String
+    Default: prod
+    AllowedValues: 
+      - prod
+      - dev
+    ConstraintDescription: prod or dev
+
+##### CONDITION #####
+  Condition:
+    Description: do you want to add SNS as a destination for send success and failure messages?
+    Type: String
+    Default: yes1
+    AllowedValues: 
+      - yes1
+      - no1
+##### CONDITIONAL STATEMENT #####
+Conditions:
+  Event : !Equals [!Ref Condition, yes1]
+
+##### RESOURCES #####
+Resources:
+##### LAMBDA IAM ROLE #####
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: usamalambdaRole
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: ["sts:AssumeRole"]
+##### POLICY FOR SNS ATTACHED TO THE LAMDA ROLE  #####
+  SNSLambdapolicy:
+    Condition: Event
+    Type: 'AWS::IAM::Policy'
+    Properties:
+        PolicyName: SNSLambdapolicy
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action: 
+                - '*'
+              Resource: '*'
+        Roles:
+          - !Ref LambdaRole
+##### LAMBDA FUNCTION #####
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: usamalambda
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.7
+      Handler: index.my_handler
+      Code:
+        ZipFile: |
+          def my_handler(event, context):
+            return {
+                  'statusCode': 400,
+                  'body': json.dumps('Hello from Lambda!')
+              }
+      
+  version:
+      DependsOn: 
+        - LambdaFunction
+      Type: AWS::Lambda::Version
+      Properties:
+        FunctionName: !Ref LambdaFunction
+  ##### PERMISSIONS FOR LAMBDA events #####
+  LambdaSNSPermission:
+    Condition: Event
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: sns.amazonaws.com
+  
+##### SNS #####
+  SNSTopic: 
+    DependsOn: 
+        - LambdaFunction
+    Condition: Event
+    Type: AWS::SNS::Topic
+    Properties: 
+      DisplayName: sns-topic-for-lambda
+      TopicName: sns-topic-for-lambda
+      # Subscription:  
+      # - Endpoint: !GetAtt LambdaFunction.Arn
+      #   Protocol: lambda
+
+##### LAMBDA DESTINATION #####
+  asyncconfig:
+      DependsOn: 
+        - SNSTopic
+        - LambdaFunction
+      Condition: Event
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        DestinationConfig:
+            OnFailure: 
+              Destination: !Ref SNSTopic
+            OnSuccess:
+              Destination: !Ref SNSTopic
+        FunctionName: !Ref LambdaFunction
+        MaximumEventAgeInSeconds: 600
+        MaximumRetryAttempts: 1
+        Qualifier: "$LATEST"
+
+##### LAMBDA SCHEDULER #####
+  LambdaSchedule:
+    Condition: Event
+    Type: "AWS::Events::Rule"
+    Properties:
+      Name: !Sub "sample-function-schedule"
+      Description: >
+        A schedule for the Lambda function
+      ScheduleExpression: !Ref LambdaRate
+      State: ENABLED
+      Targets:
+        - Arn: !Sub ${LambdaFunction.Arn}
+          Id: LambdaSchedule
+
+##### PERMISSIONS FOR LAMBDA events #####
+  LambdaSchedulePermission:
+    Condition: Event
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: events.amazonaws.com
+      SourceArn: !Sub ${LambdaSchedule.Arn}
+
+
+##### OUTPUTS #####
+Outputs: 
+  MyTopicArn: 
+    Description: Arn of Created SNS Topic
+    Value: !Ref SNSTopic
